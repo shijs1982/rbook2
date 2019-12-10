@@ -24,3 +24,279 @@
 
 ### 3.2.1 定义全部函数
 
+#### A. 定义序列导入函数'seq_import'
+
+实现如下功能：
+
+1. 读入Fasta格式的数据文件，计算每个序列的长度;
+2. 结果返回一个数据框格式的变量，每行是一个序列记录，包括4列信息（序列的ID、序列注释信息、序列长度和序列内容）。
+
+R语言代码如下：
+
+```{r}
+seq_import<- function(input_file) {
+  # 逐行读取数据，并存入向量my_fasta，向量每个元素对应文件input_file中的一行，
+  #这样以后可以通过操作向量my_fasta，来操作对应文件的行。
+  my_fasta<- readLines(input_file);
+  # 判断my_fasta中每个元素第一个字母是否是“>”（表示一个fasta记录的注释
+  #行），判断结果用1和-1表示，并存入向量y。
+  y <- regexpr("^>", my_fasta, perl = T);
+
+  # 向量y中为1的元素替换为0，即序列行对应-1，注释行对应0。
+  # 这行语句只是一个习惯问题，不是必须的。
+  y[y == 1] <- 0;
+
+  # 用index记录下y中全部0的在向量中的位置，对应注释行的行号。
+  index<- which(y == 0) ;
+
+  # 生成数据框distance，包括第1列start（除最后一个fasta记录外的所有注释
+  #行的位置）和第2列end（除第一个fasta记录外的所有注释行的位置）。
+  distance <- data.frame(start = index[1:(length(index) - 1)], end = index[2:length(index)]);
+
+  # 在数据框distance最后增加一行（两个元素），第1个是最后一个fasta记录的
+  #注释行位置，第2个是为所有行的行数+1）。
+  distance<- rbind(distance, c(distance[length(distance[, 1]), 2], length(y) + 1));
+
+  # 在数据框distance后面加1列，其值是第2列和第1列之差，注释行之间的距离，
+  #实际上就是每条序列记录对应的行数。
+  distance <- data.frame(distance, dist = distance[, 2] - distance[, 1]);
+
+  # 建立从1开始的连续正整数向量，长度等于注释行的数量。
+  seq_no<- 1:length(y[y == 0]);
+
+  # 重复正整数向量seq_no中的每一个元素，重复次数为两个临近注释行之间的距离
+  #（即distance[, 3]）。
+  index<- rep(seq_no, as.vector(distance[, 3]));
+
+  # 建立一个新的数据框变量，名称还是my_fasta，包括3列内容，第1列是index，
+  #第2列是y，第3列是旧的my_fasta。
+  my_fasta<- data.frame(index, y, my_fasta);
+
+  # 数据框my_fasta中，第2列为0的元素，对应的第1列赋值为0。
+  my_fasta[my_fasta[, 2] == 0, 1] <- 0;
+
+  # tapply函数调用paste函数的字符串连接功能，把my_fasta[, 3]中的同一类
+  #元素合并，my_fasta[, 3]的类别由对应my_fasta[, 1]的数据来决定，如“0”表示
+  #序列所有的注释行，“1”表示第一条记录的序列内容，以此类推。
+  seqs <- tapply(as.vector(my_fasta[, 3]), factor(my_fasta[, 1]), paste, collapse ="", simplify = F);
+
+  # 将变量seq由数组类型转化为字符串向量，不包括第1个元素（所有注释行），剩下
+  #的内容为所有记录的序列。
+  seqs <- as.character(seqs [2:length(seqs)]);
+
+  # 从my_fasta[, 3]中提取所有的注释行，存入向量Desc。
+  Desc<- as.vector(my_fasta[c(grep("^>", as.character(my_fasta[, 3]), perl =TRUE)), 3]);
+
+  # 建立一个新的数据框变量，名称还是my_fasta，每行对应一个序列记录，包括3列信息（序列的注释，长度和序列内容）。
+  my_fasta<- data.frame(Desc, Length =nchar(seqs), seqs);
+
+  # 从my_fasta第一列的注释行中提取序列的ID(Accession Number)。
+  Acc<- gsub(".*gb\\|(.*)\\|.*", "\\1", as.character(my_fasta[, 1]), perl = T);
+
+  # 将字符串向量Acc添加到数据框左边，成为一列。
+  my_fasta<- data.frame(Acc, my_fasta);
+
+  # 将my_fasta返回，这是习惯性的，R把最后出现的数据作为返回值。
+  my_fasta;
+}
+```
+
+#### B. 定义模式匹配函数'pattern_match'
+
+实现如下功能：
+
+1. 计算自定义模序在所有蛋白质序列中的匹配位点和次数；
+2. 输出匹配次数超过某一阈值的蛋白质序列到文件Hit_sequences.fasta；
+3. Hit_sequences.fasta中的序列要求用小写字母，匹配的部分用大写；
+4. 返回一个数据框对象，每行对应一个匹配的蛋白质序列，包括4列信息（序列的Acc，序列注释信息，序列长度，用“，”分割的匹配的所有位点、匹配次数和蛋白质序列）。
+
+R语言代码如下：
+
+```{r}
+pattern_match<- function(pattern, sequences, hit_num) {
+
+  # 获取正则表达式pattern表示的模序在所有序列中出现的位置（未找到匹配将返回
+  #-1），所有位置存入一个列表对象pos，perl=T表示兼容perl的正则表达式格式。
+  pos<- gregexpr(pattern, as.character(sequences[, 4]), perl= T);
+
+  # lapply函数调用paste函数的字符串连接功能，对pos中的每个成员的第一个元素操作，即用
+  #逗号连接成一个字符串，再用unlist将所得的列表转换为向量posv。
+  posv<- unlist(lapply(pos, paste, collapse =", "));
+
+  # 将向量posv中值为-1的项赋值为0，即表示该序列中未找到模序pattern。
+  posv[posv == -1] <- 0;
+
+  # lapply函数调用自定义函数function，根据pos中的每一个元素，计算
+  #pattern在每条序列中匹配的个数，再由unlist函数将结果转变为向量。
+  hitsv<- unlist(lapply(pos, function(x) if (x[1] == -1) {0} else {length(x)}));
+
+  # 产生一个数据框类型的结果sequences，保留了原来sequences数据的第1、2、
+  #3、4列，又插入了2列，即匹配位点（Position）和匹配次数（Hits）。
+  sequences <- data.frame(sequences[, 1:3], Position = as.vector (posv), Hits =hitsv, sequences[, 4]);
+
+  # 找出匹配次数大于hit_num的序列，并将大写形式替换为小写，gsub中第一个参数
+  #[A-Z]匹配任意大写字母，“\\L\\1”表示将前面小括号中匹配的任意字母替换为其小写形式。
+  tag <- gsub("([A-Z])", "\\L\\1", as.character(sequences[sequences[, 5]> hit_num, 6]), perl = T, ignore.case = T);
+
+  # 为模序pattern加上小括号，以适合perl正则表达式格式，方便下面使用。
+  pattern2 = paste("(", pattern, ")", sep ="");
+
+  # 将tag序列中，和模序pattern匹配的部分替换为大写，原理同上，“\\U\\1”表示
+  #替换为大写。
+  tag<- gsub(pattern2, "\\U\\1", tag, perl = T, ignore.case = T);
+
+  # 找出匹配次数大于hit_num的序列，并将序列内容替换为tag中的序列内容，存于
+  #数据框export。
+  export<- data.frame(sequences[sequences[, 5] > hit_num,-6],tag);
+
+  # Acc号前添加fasta格式标识“>”，得到数据框export，第1列是Acc，第2列
+  #是小写字母表示的蛋白质序列（模式用大写表示）
+  export<- data.frame(Acc =paste(">", export[, 1], sep =""), seq = export[,6]);
+
+  # 数据框export矩阵转置输出，到文件Hit_sequences.fasta（fasta文件格式）
+  write.table(as.vector(as.character(t(export))), file = "Hit_sequences.fasta", quote = F, row.names = F, col.names = F);
+
+  # 输出提示信息
+  cat("含有模序\"", pattern, "\"超过", hit_num, "个的所有蛋白质序列已写入当前工作目录下文件'Hit_sequences.fasta'", "\n", sep ="");
+
+  # 选中匹配次数（sequences的第5列）大于hit_num的序列
+  selected<- sequences[sequences[, 5] >hit_num, ];
+
+  # 输出提示信息
+  cat("极端嗜盐古菌蛋白组中以下序列含有模序\"", pattern, "\"的数量超过2个：", "\n", sep ="");
+
+  # 输出选中序列的第1到5列到终端，第6列是序列内容太长，不显示
+  print(selected[, 1:5]);
+
+  # 返回选中序列
+  selected;
+}
+```
+
+#### C. 定义氨基酸含量统计函数'getAApercentage'
+
+实现如下功能：
+
+1. 统计输入的每条蛋白序列的氨基酸百分比含量；
+2. 结果返回一个数据框格式的变量，每行是一种氨基酸（共20行），每列对应一条序列；
+3. 同时把百分比含量计算结果输出到文件“AApercentage.csv”。
+
+R语言代码如下：
+
+```{r}
+getAApercentage<- function(sequences) {
+  # 生成一个包含20种标准氨基酸单字母简写的数据框AA。
+  AA <- data.frame(AA =c("A", "C", "D", "E", "F", "G", "H", "I", "K", "L", "M", "N", "P", "Q", "R", "S", "T", "V", "W", "Y"));
+
+  # strsplit函数将序列内容sequences[, 6])转换成字符数组，lapply函数调用
+  #table函数统计每条序列中各字符（氨基酸）出现的次数。
+  AAstat<- lapply(strsplit(as.character(sequences[, 6]), ""), table);
+
+  # 下面循环每次处理一条序列，全部序列共length(AAstat)条。
+  for (i in 1:length(AAstat)) {
+    # 计算每条序列中20种氨基酸出现的百分比。
+    AAperc<- AAstat[[i]]/sequences[, 3][i] * 100;
+
+    # 转换为数据框，第1列是氨基酸种类，第2列是百分比含量。
+    AAperc<- as.data.frame(AAperc);
+
+    # 将数据框第2列名称改为第i条序列的Acc。
+    names(AAperc)[2] <- as.vector(sequences[i, 1]);
+
+    # 通过AA中的列名为“AA”的列和AAperc中列名为“Var1”的列之间的元素同名映射合并#AA和AAperc，并产生一个新的对象AA保存结果，这样做实质就是按照“AA”的20种氨基       
+    #酸的顺序不断添加在每个序列中的分布数据，每个循环至少一列。
+    AA <- merge(AA, AAperc, by.x ="AA", by.y ="Var1", all = T);
+  }#循环结束。
+
+  # 将AA中氨基酸种类或百分比为“NA”的项赋值为0。
+  for (i in 1:length(AA[[1]])) { #外循环总次数是20（种氨基酸）。
+    for (j in 1:length(AA)) {    #内循环总次数是序列总数+1
+      if (is.na(AA[i, j])) {     #如果发现“NA” 。
+        AA[i, j] <- 0;           #替换为0。
+      }
+    }
+  }#循环结束。
+
+  # 统计所有序列中每种氨基酸出现的平均百分比，放入AA最后一列。
+  AApercentage <- data.frame(AA, Mean =apply(AA[, 2:length(AA)], 1, mean, na.rm = T));
+
+  # 将对象AApercentage输出到同名的csv文件。
+  write.csv(AApercentage, file ="AApercentage.csv", row.names = F, quote = F) ;
+
+  # 提示计算完成。
+  cat("氨基酸分布数据已经写入当前工作目录下的文件'AApercentage.csv'", "\n");
+
+  # 返回AApercentage。
+  AApercentage;
+}
+```
+
+#### D. 定义氨基酸含量统计函数'getAApercentage'
+
+实现如下功能：
+
+调用外部程序“needle”完成所有序列的两两比对，结果存入文件。
+
+R语言代码如下：
+
+```{r}
+seq_alignment<- function(sequences) {
+      # shell可调用操作系统命令，命令以字符串形式给出，del为windows系统上的删除命令，/f选项表示强制删除只读文件，my_needle_file为所要删除的文件名，这样做的目的是删除上次程序运行的结果文件，否则本次运行结果会追加写入上次的结果文件。
+	shell("del /f my_needle_file");
+
+      # 下面循环每次写一条序列存入file1，另一条存入file2，然后调用needle程序做比对，这样每次都是对比两条序列，结果追加写入结果文件。
+	for (i in 1:length(sequences[, 1])) {
+
+      # 第1条序列写入file1（fasta格式）。
+		cat(as.character(paste(">", as.vector(sequences[i, 1]), sep ="")), as.character(as.vector(sequences[i, 6])), file ="file1", sep ="\n");
+
+		for (j in 1:length(sequences[, 1])) {
+                    # 第2条序列写入file2（fasta格式）。
+			cat(as.character(paste(">", as.vector (sequences[j, 1]), sep ="")), as.character(as.vector(sequences[j, 6])), file ="file2", sep ="\n");
+
+                    # 调用needle程序对比file1和file2中的序列，结果追加写入文件“my_needle_file”。
+			shell("needle file1 file2 stdout -gapopen 10.0 -gapextend 0.5 >> my_needle_file");
+		}
+	}
+      # 提示结果
+	cat("Needle程序完成所有序列的两两比对，结果存入文件\"my_needle_file\"\n");
+}   
+
+E1. 定义函数'getScoreMatrix'求得分矩阵
+
+实现如下功能：
+1. 读取比对结果文件“my_needle_file”；
+2. 基于两两比对得分，生成得分矩阵，求倒数得到距离矩阵；
+3. 根据距离矩阵得到所有序列的聚类关系，并绘图；
+4. 返回得分矩阵作为结果值。
+R语言代码如下：
+
+getScoreMatrix<- function(sequences) {
+  # 读取my_needel_file中的所有行，存入向量score。
+  score <- readLines("my_needle_file");
+
+  # 查找以“# Score”开头的行（如# Score: 290.5），存入向量score。
+  score <- score[grep("^# Score", score, perl = T)];
+
+  # 将任意结尾带空格的字符串替换为空，只保留score后面的数字得分。
+  score <- gsub(".* ", "", as.character(score), perl = T);
+
+  # 将字符向量转为数值向量。
+  score <- as.numeric(score);
+
+  # 将score转换为n*n的数值矩阵，n为序列条数length(sequences[, 1])
+  scorem<- matrix(score, length(sequences[, 1]), length (sequences[, 1]),dimnames =list(as.vector(sequences[, 1]), as.vector(sequences[, 1])));
+
+  # 得分矩阵求倒数，得到普通距离矩阵，用as.dist函数转换为下三角距离矩阵。
+  scorem.dist<- as.dist(1/scorem);
+
+  # 根据距离矩阵，调用层次聚类函数hclust对所有序列聚类。
+  hc<- hclust(scorem.dist, method ="complete");
+
+  # 绘制层次聚类结果。
+  plot(hc, hang = -1, main ="Distance Tree Based on Needle All-Against-All Comparison", xlab =" sequence name", ylab ="distance");
+
+  # 返回比对得分矩阵。
+  scorem;
+}
+```
